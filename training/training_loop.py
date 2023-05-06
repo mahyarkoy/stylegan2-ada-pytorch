@@ -23,6 +23,10 @@ from torch_utils.ops import grid_sample_gradfix
 
 import legacy
 from metrics import metric_main
+import sys
+sys.path.insert(1, 'libs/')
+from manifmetric.manifmetric import ManifoldMetric
+from manifmetric.nets import StyleGAN3
 
 #----------------------------------------------------------------------------
 
@@ -118,6 +122,7 @@ def training_loop(
     allow_tf32              = False,    # Enable torch.backends.cuda.matmul.allow_tf32 and torch.backends.cudnn.allow_tf32?
     abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks.
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
+    fold_ticks              = None,     # Intervals at which to update dataset fold.
 ):
     # Initialize.
     start_time = time.time()
@@ -142,7 +147,7 @@ def training_loop(
         print('Image shape:', training_set.image_shape)
         print('Label shape:', training_set.label_shape)
         print()
-
+    
     # Construct networks.
     if rank == 0:
         print('Constructing networks...')
@@ -242,6 +247,7 @@ def training_loop(
             print('Skipping tfevents export:', err)
 
     # Train.
+    inception_metric, vgg_metric = None, None
     if rank == 0:
         print(f'Training for {total_kimg} kimg...')
         print()
@@ -254,6 +260,22 @@ def training_loop(
     if progress_fn is not None:
         progress_fn(0, total_kimg)
     while True:
+
+        ### Setup training data for folds
+        # ---------------------------------------- #
+        if fold_ticks is not None and fold_ticks > 0 and cur_tick % fold_ticks == 0:
+            new_fold = min(cur_tick // fold_ticks, len(training_set.folds)-1) 
+            training_set.update_raw_idx(training_set.folds[new_fold])
+            training_set_sampler = misc.InfiniteSampler(dataset=training_set, rank=rank, num_replicas=num_gpus, seed=random_seed+new_fold)
+            training_set_iterator = iter(torch.utils.data.DataLoader(dataset=training_set, sampler=training_set_sampler, batch_size=batch_size//num_gpus, **data_loader_kwargs))
+            if rank == 0:
+                print()
+                print(f'Fold {new_fold}')
+                print('Fold Num images: ', len(training_set))
+                print('Fold Image shape:', training_set.image_shape)
+                print('Fold Label shape:', training_set.label_shape)
+                print()
+        # ---------------------------------------- #
 
         # Fetch training data.
         with torch.autograd.profiler.record_function('data_fetch'):
@@ -377,6 +399,68 @@ def training_loop(
                     metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=snapshot_pkl)
                 stats_metrics.update(result_dict.results)
         del snapshot_data # conserve memory
+
+        ### VALIDATION METRICS EVALUATION
+        # ---------------------------------------- #
+        if snapshot_data is not None:
+            if rank == 0:
+                print(f'Validation metrics...')
+            
+            if vgg_metric is None or inception_metric is None:
+                ### Setup validation set
+                head, _ = os.path.split(os.path.normpath(training_set_kwargs['path']))
+                validation_path = os.path.join(head, 'test')
+                assert os.path.exists(validation_path), f'>>> Path does not exist: {validation_path}'
+                if rank == 0:
+                    print(f'>>> Reading validation data from {validation_path}')
+                validation_set_kwargs = dict(training_set_kwargs, path=validation_path)
+                validation_set = dnnlib.util.construct_class_by_name(**validation_set_kwargs) # subclass of training.dataset.Dataset
+                validation_sampler = torch.arange(len(validation_set))[rank * (len(validation_set) // num_gpus):(rank+1) * (len(validation_set) // num_gpus)]
+                validation_loader = torch.utils.data.DataLoader(dataset=validation_set, sampler=validation_sampler, batch_size=batch_size//num_gpus, **data_loader_kwargs)
+
+                ### Collect validation features
+                vgg_metric = ManifoldMetric(model='vgg16')
+                feats = vgg_metric.extract_features(validation_loader, device=device, output_shape=len(validation_set), output_ids=validation_sampler)
+                if torch.is_distributed():
+                    torch.distributed.reduce(feats, dst=0, op=torch.distributed.ReduceOp.SUM)
+                if rank == 0:
+                    vgg_metric.compute_ref_stats(feats, k=5)
+                
+                inception_metric = ManifoldMetric(model='inceptionv3')
+                feats = inception_metric.extract_features(validation_loader, device=device, output_shape=len(validation_set), output_ids=validation_sampler)
+                if torch.is_distributed():
+                    torch.distributed.reduce(feats, dst=0, op=torch.distributed.ReduceOp.SUM)
+                if rank == 0:
+                    inception_metric.compute_ref_stats(feats)
+            
+            ### Collect model features
+            model_loader = StyleGAN3(model=snapshot_data['G_ema']).get_iter(size=len(validation_set), batch_size=batch_size//num_gpus)
+            feats = vgg_metric.extract_features(model_loader, device=device, output_shape=len(validation_set), output_ids=validation_sampler)
+            if torch.is_distributed():
+                torch.distributed.reduce(feats, dst=0, op=torch.distributed.ReduceOp.SUM)
+            if rank == 0:
+                val_metrics = dict()
+                vgg_metric.compute_gen_stats(feats)
+                val_metrics['prec'] = vgg_metric.precision()
+                val_metrics['comp_prec'] = vgg_metric.comp_precision()
+                val_metrics['recall'] = vgg_metric.recall()
+                val_metrics['density'] = vgg_metric.density()
+                val_metrics['coverage'] = vgg_metric.coverage()
+
+                inception_metric.compute_gen_stats(feats)
+                val_metrics['fid'] = inception_metric.fid()
+                val_metrics['kid'] = inception_metric.kid()
+
+                global_step = int(cur_nimg / 1e3)
+                jsonl = json.dumps(dict(val_metrics, nimg=cur_nimg, tick=cur_tick, step=global_step))
+                with open(os.path.join(run_dir, 'val_metrics.jsonl'), 'at') as fs:
+                    fs.write(jsonl + '\n')
+                    fs.flush()
+                if stats_tfevents is not None:
+                    for metric_name, metric_val in val_metrics.items():
+                        stats_tfevents.add_scalar(f'val_metrics/{metric_name}', metric_val, global_step=global_step)
+        
+        # ---------------------------------------- #
 
         # Collect statistics.
         for phase in phases:

@@ -107,7 +107,7 @@ def profiled_function(fn):
 # indefinitely, shuffling items as it goes.
 
 class InfiniteSampler(torch.utils.data.Sampler):
-    def __init__(self, dataset, rank=0, num_replicas=1, shuffle=True, seed=0, window_size=0.5):
+    def __init__(self, dataset, rank=0, num_replicas=1, shuffle=True, seed=0, window_size=0.5, stop_at_end=False):
         assert len(dataset) > 0
         assert num_replicas > 0
         assert 0 <= rank < num_replicas
@@ -119,6 +119,7 @@ class InfiniteSampler(torch.utils.data.Sampler):
         self.shuffle = shuffle
         self.seed = seed
         self.window_size = window_size
+        self.stop_at_end = stop_at_end
 
     def __iter__(self):
         order = np.arange(len(self.dataset))
@@ -130,7 +131,7 @@ class InfiniteSampler(torch.utils.data.Sampler):
             window = int(np.rint(order.size * self.window_size))
 
         idx = 0
-        while True:
+        while (not self.stop_at_end) or (idx <= order.size):
             i = idx % order.size
             if idx % self.num_replicas == self.rank:
                 yield order[i]

@@ -1,10 +1,11 @@
-﻿# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+﻿# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
-# NVIDIA CORPORATION and its licensors retain all intellectual property
-# and proprietary rights in and to this software, related documentation
-# and any modifications thereto.  Any use, reproduction, disclosure or
-# distribution of this software and related documentation without an express
-# license agreement from NVIDIA CORPORATION is strictly prohibited.
+# This work is licensed under a Creative Commons
+# Attribution-NonCommercial-ShareAlike 4.0 International License.
+# You should have received a copy of the license along with this
+# work. If not, see http://creativecommons.org/licenses/by-nc-sa/4.0/
+
+"""Streaming images and labels from datasets created with dataset_tool.py."""
 
 import os
 import numpy as np
@@ -13,6 +14,7 @@ import PIL.Image
 import json
 import torch
 import dnnlib
+import pickle as pk
 
 try:
     import pyspng
@@ -20,6 +22,7 @@ except ImportError:
     pyspng = None
 
 #----------------------------------------------------------------------------
+# Abstract base class for datasets.
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self,
@@ -29,22 +32,33 @@ class Dataset(torch.utils.data.Dataset):
         use_labels  = False,    # Enable conditioning labels? False = label dimension is zero.
         xflip       = False,    # Artificially double the size of the dataset via x-flips. Applied after max_size.
         random_seed = 0,        # Random seed to use when applying max_size.
+        cache       = False,    # Cache images in CPU memory?
     ):
         self._name = name
         self._raw_shape = list(raw_shape)
         self._use_labels = use_labels
+        self._cache = cache
+        self._cached_images = dict() # {raw_idx: np.ndarray, ...}
         self._raw_labels = None
         self._label_shape = None
+    
+        self.random_seed = random_seed
+        self.max_size = max_size
+        self._do_xflip = xflip
 
+        self.update_raw_idx(np.arange(self._raw_shape[0], dtype=np.int64))
+    
+    def update_raw_idx(self, val):
+        self._raw_idx = np.asarray(val)
+        
         # Apply max_size.
-        self._raw_idx = np.arange(self._raw_shape[0], dtype=np.int64)
-        if (max_size is not None) and (self._raw_idx.size > max_size):
-            np.random.RandomState(random_seed).shuffle(self._raw_idx)
-            self._raw_idx = np.sort(self._raw_idx[:max_size])
-
+        if (self.max_size is not None) and (self._raw_idx.size > self.max_size):
+            np.random.RandomState(self.random_seed % (1 << 31)).shuffle(self._raw_idx)
+            self._raw_idx = np.sort(self._raw_idx[:self.max_size])
+        
         # Apply xflip.
         self._xflip = np.zeros(self._raw_idx.size, dtype=np.uint8)
-        if xflip:
+        if self._do_xflip:
             self._raw_idx = np.tile(self._raw_idx, 2)
             self._xflip = np.concatenate([self._xflip, np.ones_like(self._xflip)])
 
@@ -83,7 +97,12 @@ class Dataset(torch.utils.data.Dataset):
         return self._raw_idx.size
 
     def __getitem__(self, idx):
-        image = self._load_raw_image(self._raw_idx[idx])
+        raw_idx = self._raw_idx[idx]
+        image = self._cached_images.get(raw_idx, None)
+        if image is None:
+            image = self._load_raw_image(raw_idx)
+            if self._cache:
+                self._cached_images[raw_idx] = image
         assert isinstance(image, np.ndarray)
         assert list(image.shape) == self.image_shape
         assert image.dtype == np.uint8
@@ -150,14 +169,20 @@ class Dataset(torch.utils.data.Dataset):
         return self._get_raw_labels().dtype == np.int64
 
 #----------------------------------------------------------------------------
+# Dataset subclass that loads images recursively from the specified directory
+# or ZIP file.
 
 class ImageFolderDataset(Dataset):
     def __init__(self,
         path,                   # Path to directory or zip.
         resolution      = None, # Ensure specific resolution, None = highest available.
+        use_pyspng      = True, # Use pyspng if available?
+        fold_path       = None, # Json path to read the fold_dict {fold: img_names}
+        fold_id         = None, # Key of the fold to use
         **super_kwargs,         # Additional arguments for the Dataset base class.
     ):
         self._path = path
+        self._use_pyspng = use_pyspng
         self._zipfile = None
 
         if os.path.isdir(self._path):
@@ -179,6 +204,25 @@ class ImageFolderDataset(Dataset):
         if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
             raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
+
+        ### Make folds
+        if fold_path is not None:
+            with open(fold_path, 'r') as fs:
+                fold_dict = json.load(fs)
+            
+            for fold, fold_names in fold_dict.items():
+                fold_dict[fold] = set(fold_names)
+            
+            self.folds = {fold: list() for fold in fold_dict}
+            for img_idx, img_name in enumerate(self._image_fnames):
+                for fold, fold_names in fold_dict.items():
+                    if img_name in fold_names:
+                        self.folds[fold].append(img_idx)
+            
+            if fold_id is not None:
+                self.update_raw_idx(self.folds[fold_id])
+        else:
+            self.folds = None
 
     @staticmethod
     def _file_ext(fname):
@@ -210,7 +254,7 @@ class ImageFolderDataset(Dataset):
     def _load_raw_image(self, raw_idx):
         fname = self._image_fnames[raw_idx]
         with self._open_file(fname) as f:
-            if pyspng is not None and self._file_ext(fname) == '.png':
+            if self._use_pyspng and pyspng is not None and self._file_ext(fname) == '.png':
                 image = pyspng.load(f.read())
             else:
                 image = np.array(PIL.Image.open(f))
