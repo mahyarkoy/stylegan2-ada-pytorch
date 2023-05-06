@@ -20,6 +20,7 @@ from torch_utils import misc
 from torch_utils import training_stats
 from torch_utils.ops import conv2d_gradfix
 from torch_utils.ops import grid_sample_gradfix
+import wandb
 
 import legacy
 from metrics import metric_main
@@ -239,6 +240,10 @@ def training_loop(
     stats_jsonl = None
     stats_tfevents = None
     if rank == 0:
+        ### Init wandb
+        # ---------------------------------------- #
+        wandb.init(project='creative_metric_gms', name=run_dir, dir=run_dir, config=dict(batch_size=batch_size, fold_ticks=fold_ticks, **training_set_kwargs, **G_kwargs, **D_kwargs), resume='allow', sync_tensorboard=True)
+        # ---------------------------------------- #
         stats_jsonl = open(os.path.join(run_dir, 'stats.jsonl'), 'wt')
         try:
             import torch.utils.tensorboard as tensorboard
