@@ -207,8 +207,8 @@ class ImageFolderDataset(Dataset):
 
         ### Make folds
         if fold_path is not None:
-            with open(fold_path, 'r') as fs:
-                fold_dict = json.load(fs)
+            with open(fold_path, 'rb') as fs:
+                fold_dict = pk.load(fs)
             
             for fold, fold_names in fold_dict.items():
                 fold_dict[fold] = set(fold_names)

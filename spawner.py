@@ -9,10 +9,10 @@ SBATCH_STR = '''#!/bin/bash
 #SBATCH --account=gard 
 #SBATCH --qos=premium 
 #SBATCH --partition=ALL 
-#SBATCH --cpus-per-task=4 
+#SBATCH --cpus-per-task=8 
 #SBATCH --gres=gpu:{device} 
 #SBATCH --mem=32G
-#SBATCH --time=48:00:00
+#SBATCH --time=5-00:00:00
 #SBATCH --output={save_dir}/sbatch_{job_name}.out
 #SBATCH --error={save_dir}/sbatch_{job_name}.out
 #SBATCH --open-mode=truncate
@@ -24,7 +24,7 @@ echo "CPU allocated: "$(taskset -c -p $$)
 echo "GPU allocated: "$CUDA_VISIBLE_DEVICES
 nvidia-smi
 source /nas/home/mkhayat/.bashrc
-conda activate py38torch
+conda activate stylegan2ada
 '''
 
 SBATCH_STR_LARGE = '''#!/bin/bash 
@@ -36,7 +36,7 @@ SBATCH_STR_LARGE = '''#!/bin/bash
 #SBATCH --cpus-per-task=16 
 #SBATCH --gres=gpu:{device}
 #SBATCH --mem=128G
-#SBATCH --time=48:00:00
+#SBATCH --time=5-00:00:00
 #SBATCH --output={save_dir}/sbatch_{job_name}.out
 #SBATCH --error={save_dir}/sbatch_{job_name}.out
 #SBATCH --open-mode=truncate
@@ -48,7 +48,7 @@ echo "CPU allocated: "$(taskset -c -p $$)
 echo "GPU allocated: "$CUDA_VISIBLE_DEVICES
 nvidia-smi
 source /nas/home/mkhayat/.bashrc
-conda activate py38torch
+conda activate stylegan2ada
 '''
 
 COPY_STR = 'cp -r {temp_dir} {save_dir}'
@@ -58,39 +58,101 @@ EXP_CONFIGS = {
     'cifar_separate':
     {
         'cmd': 'python train.py',
-        'outdir': 'folds_{cfg}_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'outdir': 'cifar_{augpipe}_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
         'cfg': 'cifar',
         'cond': 0,
         'mirror': 0,
         'data': 'data/cifar/train',
-        'fold_path': 'data/cifar/train/folds_10eq_seed1000.json',
-        'fold_id': [9],
+        'fold_path': 'data/cifar/train/folds_10eq_seed1000.pk',
+        'fold_id': [1, 2, 3, 4, 5, 6, 7, 8, 9],
         'fold_ticks': 0,
-        'kimg': 100000,
-        'snap': 50,
+        'kimg': 25000,
+        'snap': 25000 // (4*50),
         'metrics': "none",
         'gpus': 2,
-        'seed': 0,
-        'cache': 1
+        'seed': 1000,
+        'cache': 1,
+        'augpipe': 'color' #bgc
     },
 
     'cifar_joint':
     {
         'cmd': 'python train.py',
-        'outdir': '{cfg}_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'outdir': 'cifar_{augpipe}_joint_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
         'cfg': 'cifar',
         'cond': 0,
         'mirror': 0,
         'data': 'data/cifar/train',
-        'fold_path': 'data/cifar/train/folds_10eq_seed1000.json',
+        'fold_path': 'data/cifar/train/folds_10eq_seed1000.pk',
         'fold_id': [9],
-        'fold_ticks': 100000 // (4*10),
-        'kimg': 100000,
-        'snap': 50,
+        'fold_ticks': 25000 // (4*50),
+        'kimg': 25000,
+        'snap': 25000 // (4*50*5),
         'metrics': "none",
         'gpus': 2,
-        'seed': 0,
-        'cache': 1
+        'seed': 1000,
+        'cache': 1,
+        'augpipe': 'color' #bgc
+    },
+
+    'ffhq256_separate':
+    {
+        'cmd': 'python train.py',
+        'outdir': 'ffhq256_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'cfg': 'paper256',
+        'cond': 0,
+        'mirror': 0,
+        'data': 'data/ffhq256/train',
+        'fold_path': 'data/ffhq256/train/folds_10eq_seed1000.pk',
+        'fold_id': [0, 4],#[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        'fold_ticks': 0,
+        'kimg': 25000,
+        'snap': 25000 // (4*50),
+        'metrics': "none",
+        'gpus': 2,
+        'seed': 1000,
+        'cache': 1,
+        # 'augpipe': 'color' #bgc
+    },
+
+    'ffhq256_joint':
+    {
+        'cmd': 'python train.py',
+        'outdir': 'ffhq256_{augpipe}_joint_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'cfg': 'paper256',
+        'cond': 0,
+        'mirror': 0,
+        'data': 'data/ffhq256/train',
+        'fold_path': 'data/ffhq256/train/folds_10eq_seed1000.pk',
+        'fold_id': [9],
+        'fold_ticks': 25000 // (4*50),
+        'kimg': 25000,
+        'snap': 25000 // (4*50*5),
+        'metrics': "none",
+        'gpus': 2,
+        'seed': 1000,
+        'cache': 1,
+        'augpipe': 'color' #bgc
+    },
+    
+    'cifar_test':
+    {
+        'cmd': 'python train.py',
+        'outdir': 'te_cifar_{augpipe}_joint_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'cfg': 'cifar',
+        'cond': 0,
+        'mirror': 0,
+        'data': 'data/cifar/train',
+        'fold_path': 'data/cifar/train/folds_10eq_seed1000.pk',
+        'fold_id': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        'fold_ticks': 25000 // (4*50),
+        'kimg': 25000,
+        'snap': 25000 // (4*50*5),
+        'metrics': "none",
+        'gpus': 1,
+        'seed': 1000,
+        'cache': 0,
+        'augpipe': 'color' #bgc
     },
 }
 
@@ -132,8 +194,8 @@ def setup_args():
     parser.add_argument('--single_thread', action='store_true', help='Serialize seeds on the same run.')
     parser.add_argument('--save_local', action='store_true', help='Saves on the local machine and copies back.')
     parser.add_argument('--bash', action='store_true', help='Runs with bash instead of sbatch.')
-    parser.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use.')
-    parser.add_argument('--device', help='The gpu ids to use, e.g. 0,1,2. will be ignored when bash is not used.')
+    parser.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use, will be ignored if bash is specified.')
+    parser.add_argument('--device', help='The gpu ids to use, e.g. 0,1,2 will be ignored if bash is not specified.')
     parser.add_argument('--large_gpu', action='store_true', help='SBATCH option: use large gpu setting.')
     return parser.parse_args()
 
@@ -152,10 +214,10 @@ if __name__ == '__main__':
         job_save_dirs = list()
         ### Convert into command string
         for config in configs:
-            config_save_dir = config['save_dir'].format(**config)
+            config_save_dir = config['outdir'].format(**config)
             temp_save_dir = (os.path.join('$TMPDIR/logs_temp', config_save_dir)
                     if args.save_local else os.path.join(args.save_dir, config_save_dir))
-            config['save_dir'] = temp_save_dir
+            config['outdir'] = temp_save_dir
             config_str = ' '.join([config['cmd']] + [f'--{key} {val}' for key, val in config.items() if key != 'cmd'])
             if args.save_local:
                 config_str = f'{config_str}\n{COPY_STR.format(temp_dir=temp_save_dir, save_dir=args.save_dir)}\n{DEL_STR.format(temp_dir=temp_save_dir)}'

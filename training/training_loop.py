@@ -242,7 +242,7 @@ def training_loop(
     if rank == 0:
         ### Init wandb
         # ---------------------------------------- #
-        wandb.init(project='creative_metric_gms', name=run_dir, dir=run_dir, config=dict(batch_size=batch_size, fold_ticks=fold_ticks, **training_set_kwargs, **G_kwargs, **D_kwargs), resume='allow', sync_tensorboard=True)
+        wandb.init(project='creative_metric_gms', name=run_dir, dir=run_dir, config=dict(batch_size=batch_size, fold_ticks=fold_ticks, training_set_kwargs=training_set_kwargs, G_kwargs=G_kwargs, D_kwargs=D_kwargs), resume='allow', sync_tensorboard=True)
         # ---------------------------------------- #
         stats_jsonl = open(os.path.join(run_dir, 'stats.jsonl'), 'wt')
         try:
@@ -264,12 +264,13 @@ def training_loop(
     batch_idx = 0
     if progress_fn is not None:
         progress_fn(0, total_kimg)
+    pre_fold = -1
     while True:
 
         ### Setup training data for folds
         # ---------------------------------------- #
-        if fold_ticks is not None and fold_ticks > 0 and cur_tick % fold_ticks == 0:
-            new_fold = min(cur_tick // fold_ticks, len(training_set.folds)-1) 
+        if fold_ticks is not None and fold_ticks > 0 and (new_fold := min(cur_tick // fold_ticks, len(training_set.folds)-1)) != pre_fold:
+            pre_fold = new_fold
             training_set.update_raw_idx(training_set.folds[new_fold])
             training_set_sampler = misc.InfiniteSampler(dataset=training_set, rank=rank, num_replicas=num_gpus, seed=random_seed+new_fold)
             training_set_iterator = iter(torch.utils.data.DataLoader(dataset=training_set, sampler=training_set_sampler, batch_size=batch_size//num_gpus, **data_loader_kwargs))
@@ -277,8 +278,8 @@ def training_loop(
                 print()
                 print(f'Fold {new_fold}')
                 print('Fold Num images: ', len(training_set))
-                print('Fold Image shape:', training_set.image_shape)
-                print('Fold Label shape:', training_set.label_shape)
+                print('Fold Image shape: ', training_set.image_shape)
+                print('Fold Label shape: ', training_set.label_shape)
                 print()
         # ---------------------------------------- #
 
@@ -407,7 +408,23 @@ def training_loop(
 
         ### VALIDATION METRICS EVALUATION
         # ---------------------------------------- #
-        if snapshot_data is not None:
+        def val_transform(data):
+            img = data[0] if isinstance(data, (tuple, list)) else data
+            img = torch.as_tensor(img, dtype=torch.float32) / 255
+            if img.shape[1] == 1:
+                img = img.repeat([1, 3, 1, 1])
+            return img
+        
+        def model_transform(data):
+            img = data[0] if isinstance(data, (tuple, list)) else data
+            if img.shape[1] == 1:
+                img = img.repeat([1, 3, 1, 1])
+            return img
+        
+        def is_distributed():
+            return torch.distributed.is_initialized()
+        
+        if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0):
             if rank == 0:
                 print(f'Validation metrics...')
             
@@ -415,47 +432,64 @@ def training_loop(
                 ### Setup validation set
                 head, _ = os.path.split(os.path.normpath(training_set_kwargs['path']))
                 validation_path = os.path.join(head, 'test')
-                assert os.path.exists(validation_path), f'>>> Path does not exist: {validation_path}'
-                if rank == 0:
-                    print(f'>>> Reading validation data from {validation_path}')
-                validation_set_kwargs = dict(training_set_kwargs, path=validation_path)
+                assert os.path.exists(validation_path), f'Path does not exist: {validation_path}'
+                validation_set_kwargs = dict(training_set_kwargs, path=validation_path, fold_path=None, fold_id=None, xflip=False, use_labels=False, max_size=None)
                 validation_set = dnnlib.util.construct_class_by_name(**validation_set_kwargs) # subclass of training.dataset.Dataset
-                validation_sampler = torch.arange(len(validation_set))[rank * (len(validation_set) // num_gpus):(rank+1) * (len(validation_set) // num_gpus)]
+                validation_split_len = int(np.ceil(len(validation_set) / num_gpus))
+                validation_sampler = torch.arange(len(validation_set))[rank*validation_split_len:(rank+1)*validation_split_len]
                 validation_loader = torch.utils.data.DataLoader(dataset=validation_set, sampler=validation_sampler, batch_size=batch_size//num_gpus, **data_loader_kwargs)
+                if rank == 0:
+                    print(f'\n>>> Read validation data from {validation_path}')
+                    print('Val Num images: ', len(validation_set))
+                    print('Val Image shape: ', validation_set.image_shape)
+                    print('Val Label shape: ', validation_set.label_shape)
+                    print()
 
                 ### Collect validation features
                 vgg_metric = ManifoldMetric(model='vgg16')
-                feats = vgg_metric.extract_features(validation_loader, device=device, output_shape=len(validation_set), output_ids=validation_sampler)
-                if torch.is_distributed():
+                feats = vgg_metric.extract_features(validation_loader, device=device, output_shape=len(validation_set), output_ids=validation_sampler, transform=val_transform)
+                if is_distributed():
                     torch.distributed.reduce(feats, dst=0, op=torch.distributed.ReduceOp.SUM)
                 if rank == 0:
                     vgg_metric.compute_ref_stats(feats, k=5)
                 
                 inception_metric = ManifoldMetric(model='inceptionv3')
-                feats = inception_metric.extract_features(validation_loader, device=device, output_shape=len(validation_set), output_ids=validation_sampler)
-                if torch.is_distributed():
+                feats = inception_metric.extract_features(validation_loader, device=device, output_shape=len(validation_set), output_ids=validation_sampler, transform=val_transform)
+                if is_distributed():
                     torch.distributed.reduce(feats, dst=0, op=torch.distributed.ReduceOp.SUM)
                 if rank == 0:
                     inception_metric.compute_ref_stats(feats)
             
             ### Collect model features
-            model_loader = StyleGAN3(model=snapshot_data['G_ema']).get_iter(size=len(validation_set), batch_size=batch_size//num_gpus)
-            feats = vgg_metric.extract_features(model_loader, device=device, output_shape=len(validation_set), output_ids=validation_sampler)
-            if torch.is_distributed():
+            model_loader = StyleGAN3(model=G_ema).get_iter(size=len(validation_sampler), batch_size=batch_size//num_gpus)
+            feats = vgg_metric.extract_features(model_loader, device=device, output_shape=len(validation_set), output_ids=validation_sampler, transform=model_transform)
+            if is_distributed():
                 torch.distributed.reduce(feats, dst=0, op=torch.distributed.ReduceOp.SUM)
             if rank == 0:
                 val_metrics = dict()
-                vgg_metric.compute_gen_stats(feats)
+                vgg_metric.compute_gen_stats(feats, k=5)
                 val_metrics['prec'] = vgg_metric.precision()
                 val_metrics['comp_prec'] = vgg_metric.comp_precision()
                 val_metrics['recall'] = vgg_metric.recall()
                 val_metrics['density'] = vgg_metric.density()
                 val_metrics['coverage'] = vgg_metric.coverage()
+            ### Conserve memory
+            del feats
+            vgg_metric.gen_stats = None
 
+            feats = inception_metric.extract_features(model_loader, device=device, output_shape=len(validation_set), output_ids=validation_sampler, transform=model_transform)
+            if is_distributed():
+                torch.distributed.reduce(feats, dst=0, op=torch.distributed.ReduceOp.SUM)
+            if rank == 0:
                 inception_metric.compute_gen_stats(feats)
                 val_metrics['fid'] = inception_metric.fid()
                 val_metrics['kid'] = inception_metric.kid()
+            ### Conserve memory
+            del feats
+            inception_metric.gen_stats = None
 
+            ### Save val metrics
+            if rank == 0:
                 global_step = int(cur_nimg / 1e3)
                 jsonl = json.dumps(dict(val_metrics, nimg=cur_nimg, tick=cur_tick, step=global_step))
                 with open(os.path.join(run_dir, 'val_metrics.jsonl'), 'at') as fs:
