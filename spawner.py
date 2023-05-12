@@ -4,15 +4,15 @@ import argparse
 import os
 
 SBATCH_STR = '''#!/bin/bash 
-#SBATCH --job-name={job_name} 
+#SBATCH --job-name={job_name}
 #SBATCH --ntasks=1 
 #SBATCH --account=gard 
 #SBATCH --qos=premium 
 #SBATCH --partition=ALL 
-#SBATCH --cpus-per-task=8 
+#SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:{device} 
 #SBATCH --mem=32G
-#SBATCH --time=5-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --output={save_dir}/sbatch_{job_name}.out
 #SBATCH --error={save_dir}/sbatch_{job_name}.out
 #SBATCH --open-mode=truncate
@@ -25,6 +25,7 @@ echo "GPU allocated: "$CUDA_VISIBLE_DEVICES
 nvidia-smi
 source /nas/home/mkhayat/.bashrc
 conda activate stylegan2ada
+export TORCH_EXTENSIONS_DIR={save_dir}
 '''
 
 SBATCH_STR_LARGE = '''#!/bin/bash 
@@ -64,15 +65,15 @@ EXP_CONFIGS = {
         'mirror': 0,
         'data': 'data/cifar/train',
         'fold_path': 'data/cifar/train/folds_10eq_seed1000.pk',
-        'fold_id': [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        'fold_id': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         'fold_ticks': 0,
         'kimg': 25000,
         'snap': 25000 // (4*50),
         'metrics': "none",
         'gpus': 2,
-        'seed': 1000,
+        'seed': 1100,
         'cache': 1,
-        'augpipe': 'color' #bgc
+        'augpipe': 'bg' #bgc
     },
 
     'cifar_joint':
@@ -98,13 +99,13 @@ EXP_CONFIGS = {
     'ffhq256_separate':
     {
         'cmd': 'python train.py',
-        'outdir': 'ffhq256_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'outdir': 'ffhq256_{augpipe}_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
         'cfg': 'paper256',
         'cond': 0,
         'mirror': 0,
         'data': 'data/ffhq256/train',
         'fold_path': 'data/ffhq256/train/folds_10eq_seed1000.pk',
-        'fold_id': [0, 4],#[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        'fold_id': [2, 4, 6, 8, 1, 3, 5, 7], #[1, 2, 3, 4, 5, 6, 7, 8, 9],
         'fold_ticks': 0,
         'kimg': 25000,
         'snap': 25000 // (4*50),
@@ -112,7 +113,7 @@ EXP_CONFIGS = {
         'gpus': 2,
         'seed': 1000,
         'cache': 1,
-        # 'augpipe': 'color' #bgc
+        'augpipe': 'bg' #bgc
     },
 
     'ffhq256_joint':
@@ -238,7 +239,7 @@ if __name__ == '__main__':
                 bash_file_path = os.path.join(job_save_dir, f'bash_{job_name}.sh')
                 set_device_str = f'export CUDA_VISIBLE_DEVICES={args.device}\n' if args.device is not None else ''
                 with open(bash_file_path, 'w+') as fs:
-                    print('#!/bin/bash\n'+set_device_str+cmd_str, file=fs)
+                    print('#!/bin/bash\n'+set_device_str+f'export TORCH_EXTENSIONS_DIR={job_save_dir}\n'+cmd_str, file=fs)
                     fs.flush()
                     os.fsync(fs)
 
