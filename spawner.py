@@ -9,10 +9,10 @@ SBATCH_STR = '''#!/bin/bash
 #SBATCH --account=gard 
 #SBATCH --qos=premium 
 #SBATCH --partition=ALL 
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:{device} 
 #SBATCH --mem=32G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=5-00:00:00
 #SBATCH --output={save_dir}/sbatch_{job_name}.out
 #SBATCH --error={save_dir}/sbatch_{job_name}.out
 #SBATCH --open-mode=truncate
@@ -59,12 +59,12 @@ EXP_CONFIGS = {
     'cifar_separate':
     {
         'cmd': 'python train.py',
-        'outdir': 'cifar_{augpipe}_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'outdir': 'cifar_{augpipe}_fold{fold_id}_foldticks{fold_ticks}_seeddata{seed}',
         'cfg': 'cifar',
         'cond': 0,
         'mirror': 0,
         'data': 'data/cifar/train',
-        'fold_path': 'data/cifar/train/folds_10eq_seed1000.pk',
+        'fold_path': 'data/cifar/train/folds_10eq_seed{seed}.pk',
         'fold_id': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         'fold_ticks': 0,
         'kimg': 25000,
@@ -79,32 +79,32 @@ EXP_CONFIGS = {
     'cifar_joint':
     {
         'cmd': 'python train.py',
-        'outdir': 'cifar_{augpipe}_joint_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'outdir': 'cifar_{augpipe}_joint_fold{fold_id}_foldticks{fold_ticks}_seeddata{seed}',
         'cfg': 'cifar',
         'cond': 0,
         'mirror': 0,
         'data': 'data/cifar/train',
-        'fold_path': 'data/cifar/train/folds_10eq_seed1000.pk',
+        'fold_path': 'data/cifar/train/folds_10eq_seed{seed}.pk',
         'fold_id': [9],
-        'fold_ticks': 25000 // (4*50),
+        'fold_ticks': 25000 // (4*10),
         'kimg': 25000,
-        'snap': 25000 // (4*50*5),
+        'snap': 25000 // (4*10*5),
         'metrics': "none",
         'gpus': 2,
-        'seed': 1000,
+        'seed': [1200],
         'cache': 1,
-        'augpipe': 'color' #bgc
+        'augpipe': 'bg' #bgc
     },
 
     'ffhq256_separate':
     {
         'cmd': 'python train.py',
-        'outdir': 'ffhq256_{augpipe}_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'outdir': 'ffhq256_{augpipe}_fold{fold_id}_foldticks{fold_ticks}_seeddata{seed}',
         'cfg': 'paper256',
         'cond': 0,
         'mirror': 0,
         'data': 'data/ffhq256/train',
-        'fold_path': 'data/ffhq256/train/folds_10eq_seed1000.pk',
+        'fold_path': 'data/ffhq256/train/folds_10eq_seed{seed}.pk',
         'fold_id': [2, 4, 6, 8, 1, 3, 5, 7], #[1, 2, 3, 4, 5, 6, 7, 8, 9],
         'fold_ticks': 0,
         'kimg': 25000,
@@ -119,12 +119,12 @@ EXP_CONFIGS = {
     'ffhq256_joint':
     {
         'cmd': 'python train.py',
-        'outdir': 'ffhq256_{augpipe}_joint_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'outdir': 'ffhq256_{augpipe}_joint_fold{fold_id}_foldticks{fold_ticks}_seeddata{seed}',
         'cfg': 'paper256',
         'cond': 0,
         'mirror': 0,
         'data': 'data/ffhq256/train',
-        'fold_path': 'data/ffhq256/train/folds_10eq_seed1000.pk',
+        'fold_path': 'data/ffhq256/train/folds_10eq_seed{seed}.pk',
         'fold_id': [9],
         'fold_ticks': 25000 // (4*50),
         'kimg': 25000,
@@ -139,12 +139,12 @@ EXP_CONFIGS = {
     'cifar_test':
     {
         'cmd': 'python train.py',
-        'outdir': 'te_cifar_{augpipe}_joint_fold{fold_id}_foldticks{fold_ticks}_seed{seed}',
+        'outdir': 'te_cifar_{augpipe}_joint_fold{fold_id}_foldticks{fold_ticks}_seeddata{seed}',
         'cfg': 'cifar',
         'cond': 0,
         'mirror': 0,
         'data': 'data/cifar/train',
-        'fold_path': 'data/cifar/train/folds_10eq_seed1000.pk',
+        'fold_path': 'data/cifar/train/folds_10eq_seed{seed}.pk',
         'fold_id': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         'fold_ticks': 25000 // (4*50),
         'kimg': 25000,
@@ -215,7 +215,10 @@ if __name__ == '__main__':
         job_save_dirs = list()
         ### Convert into command string
         for config in configs:
-            config_save_dir = config['outdir'].format(**config)
+            for key, val in config.items():
+                if isinstance(val, str):
+                    config[key] = val.format(**config)
+            config_save_dir = config['outdir']
             temp_save_dir = (os.path.join('$TMPDIR/logs_temp', config_save_dir)
                     if args.save_local else os.path.join(args.save_dir, config_save_dir))
             config['outdir'] = temp_save_dir
