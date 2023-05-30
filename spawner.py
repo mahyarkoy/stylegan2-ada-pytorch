@@ -9,7 +9,7 @@ SBATCH_STR = '''#!/bin/bash
 #SBATCH --account=gard 
 #SBATCH --qos=premium 
 #SBATCH --partition=ALL 
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:{device} 
 #SBATCH --mem=32G
 #SBATCH --time=5-00:00:00
@@ -59,7 +59,7 @@ EXP_CONFIGS = {
     'cifar_separate':
     {
         'cmd': 'python train.py',
-        'outdir': 'cifar_{augpipe}_fold{fold_id}_foldticks{fold_ticks}_seeddata{seed}',
+        'outdir': 'cifar_fold{fold_id}_foldticks{fold_ticks}_seeddata{seed}',
         'cfg': 'cifar',
         'cond': 0,
         'mirror': 0,
@@ -71,9 +71,9 @@ EXP_CONFIGS = {
         'snap': 25000 // (4*50),
         'metrics': "none",
         'gpus': 2,
-        'seed': 1100,
+        'seed': 1200,
         'cache': 1,
-        'augpipe': 'bg' #bgc
+        # 'augpipe': 'blit' #bgc
     },
 
     'cifar_joint':
@@ -145,7 +145,7 @@ EXP_CONFIGS = {
         'mirror': 0,
         'data': 'data/cifar/train',
         'fold_path': 'data/cifar/train/folds_10eq_seed{seed}.pk',
-        'fold_id': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        'fold_id': [0, 1, 2],#[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         'fold_ticks': 25000 // (4*50),
         'kimg': 25000,
         'snap': 25000 // (4*50*5),
